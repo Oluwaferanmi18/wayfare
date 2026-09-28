@@ -72,6 +72,14 @@
     --chart-derivative: var(--brand-slate);
     --chart-nomarket: var(--brand-coral);
     --focus-ring: rgba(15, 118, 110, 0.28);
+    /* The halo above gives the indicator area; this is the edge that carries
+       it. A focus indicator has to reach 3:1 against the surfaces it sits on
+       (SC 1.4.11 / 2.4.11), and a 28% teal wash over a white panel is nowhere
+       near that, so the ring is drawn twice: a solid outline that clears the
+       contrast and the halo that makes it easy to find. Dark takes the light
+       end of the same ramp for the same reason — the token flips with the
+       scheme, the rule that uses it does not. */
+    --focus-outline: #0F766E;
     --press-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.18);
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --text-xs: .72rem;
@@ -138,6 +146,7 @@
       --success-soft: rgba(16, 185, 129, 0.18);
       --neutral-soft: rgba(148, 163, 184, 0.18);
       --focus-ring: rgba(110, 231, 183, 0.35);
+      --focus-outline: #5EEAD4;
       --press-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
     }
   }
@@ -197,14 +206,48 @@
     background: var(--panel-alt); box-shadow: var(--press-shadow);
   }
   button:focus-visible, select:focus-visible {
-    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring);
+    outline: 2px solid var(--focus-outline); outline-offset: 2px;
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring);
   }
-  /* The reload link inside an error banner is the only inline anchor; it
-     takes keyboard focus and must say so (issue #293 made it focusable, this
-     makes the focus visible). */
+  /* Every focusable thing in the page carries the same indicator (issue
+     #303): the solid outline in the scheme's own token, so a control, a link
+     and the skip target all read as one kind of event. The reload link inside
+     an error banner is the only inline anchor; it takes keyboard focus and
+     must say so (issue #293 made it focusable, this makes the focus visible). */
   a:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-xs);
+    outline: 2px solid var(--focus-outline); outline-offset: 2px;
+    border-radius: var(--radius-xs);
   }
+  /* A link inside running text is identified by its underline, not by its
+     colour (SC 1.4.1 / 2.4.4): the banner's reload link sits mid-sentence and
+     would otherwise be body text that happens to go somewhere. The skip link
+     opts out — it is a control with its own visible-on-focus treatment. */
+  a:not(.skip-link) { text-decoration: underline; text-underline-offset: 2px; }
+  /* The results region is a programmatic focus target (tabindex="-1"), not a
+     tab stop, so it takes the same outline whenever the browser considers the
+     focus visible: a reader who skipped here sees where they landed. */
+  #out:focus-visible {
+    outline: 2px solid var(--focus-outline); outline-offset: 4px;
+    border-radius: var(--radius-md);
+  }
+
+  /* Skip link (issue #303): the first stop in the tab order, so a keyboard
+     reader can pass the controls and land in the results, and the target a
+     re-render hands focus back to. It is pushed above the viewport rather
+     than hidden, so it stays in the tab order, and it reappears the moment it
+     takes focus — with the same focus outline as everything else. */
+  .skip-link {
+    position: absolute; z-index: 10;
+    left: var(--space-4); top: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--accent); border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-soft);
+    font-weight: 600; text-decoration: none;
+    transform: translateY(-200%);
+    transition: transform .15s ease;
+  }
+  .skip-link:focus { transform: none; }
   button:disabled, select:disabled {
     opacity: .55; cursor: default; color: var(--muted);
   }
@@ -423,6 +466,7 @@
 </style>
 </head>
 <body>
+<a class="skip-link" href="#out">Skip to the results</a>
 <div class="wrap">
   <header>
     <h1>Wayfare</h1>
@@ -442,7 +486,7 @@
     <span id="status" class="sub"></span>
   </div>
 
-  <div id="out">
+  <div id="out" tabindex="-1">
     <div class="loading-panel" id="loading">
       <div class="loading-dots">
         <span></span><span></span><span></span>
@@ -471,6 +515,21 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, c => (
   {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// setOut replaces the results region. It exists for focus (issue #303):
+// replacing content that holds the keyboard's focus drops focus to the
+// document body, which strands a keyboard reader at the top of the page with
+// no indication of where they were. So when focus was inside #out — the
+// reader followed the skip link, or was working through the results — it
+// lands back on the region and the next Tab continues from the new content.
+// Pointer readers are untouched: their focus sits on a control outside #out,
+// so the branch does not fire and nothing moves under the cursor.
+function setOut(html) {
+  const out = $('out');
+  const focusWasInside = out.contains(document.activeElement);
+  out.innerHTML = html;
+  if (focusWasInside) out.focus();
+}
 
 // formatPct rounds a loss percentage string to 2 decimal places for display.
 // The server publishes full-precision decimals (per issue #83) so the verdict
@@ -588,10 +647,10 @@ function buildSelector(data) {
     // Nothing measurable: say so as its own state rather than leaving an empty
     // dropdown that looks like a loading bug (issue #300).
     sel.innerHTML = '<option value="" disabled selected>No corridors available</option>';
-    $('out').innerHTML = `<div class="panel">${emptyState({
+    setOut(`<div class="panel">${emptyState({
       title: 'No corridors to measure',
       body: 'This instance has verified no destination assets.',
-    })}</div>`;
+    })}</div>`);
     return;
   }
   // Sort: corridors with history first, then alphabetically.
@@ -669,11 +728,10 @@ async function measure() {
   if (!to) {
     // No corridor selected is its own empty state — distinct from a corridor
     // that was measured and returned nothing (issue #300).
-    $('out').innerHTML =
-      `<div class="panel">${emptyState({
-        title: 'No corridor selected',
-        body: 'Choose a destination asset above, then measure it.',
-      })}</div>`;
+    setOut(`<div class="panel">${emptyState({
+      title: 'No corridor selected',
+      body: 'Choose a destination asset above, then measure it.',
+    })}</div>`);
     return;
   }
   $('run').disabled = true;
@@ -736,7 +794,7 @@ function render(d) {
   if (d.findings) parts.push(findings(d.findings));
 
   parts.push(caseStudy(d));
-  $('out').innerHTML = parts.join('');
+  setOut(parts.join(''));
 }
 
 function unscoredBlock(d) {
@@ -1078,7 +1136,7 @@ function renderTrend() {
           'as history exists. Nothing is interpolated, estimated, or borrowed ' +
           'from another corridor in the meantime.',
       })}</div>`);
-    $('out').innerHTML = parts.join('');
+    setOut(parts.join(''));
     return;
   }
 
@@ -1117,7 +1175,7 @@ function renderTrend() {
     run was scored against, so a benchmark change sits next to the numbers it
     affects.</p></div>`);
 
-  $('out').innerHTML = parts.join('');
+  setOut(parts.join(''));
   $('trend-size').addEventListener('change', (e) => {
     trendState.size = e.target.value;
     $('trend-chart').innerHTML = trendChart(d, trendState.size);
@@ -1323,11 +1381,10 @@ $('trend').addEventListener('click', loadTrend);
 
 async function loadCorridor(to) {
   if (!to) {
-    $('out').innerHTML =
-      `<div class="panel">${emptyState({
-        title: 'No corridor selected',
-        body: 'Choose a destination asset above.',
-      })}</div>`;
+    setOut(`<div class="panel">${emptyState({
+      title: 'No corridor selected',
+      body: 'Choose a destination asset above.',
+    })}</div>`);
     return;
   }
   try {
